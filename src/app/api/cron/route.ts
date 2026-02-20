@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { Resend } from 'resend';
 
 export const dynamic = 'force-dynamic'; 
 
@@ -13,6 +14,8 @@ export async function GET(request: Request) {
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
   );
+  
+  const resend = new Resend(process.env.RESEND_API_KEY);
 
   const { data: users, error } = await supabase.from('profiles').select('*').eq('is_active', true);
   if (error || !users) return NextResponse.json({ ok: false });
@@ -23,30 +26,30 @@ export async function GET(request: Request) {
     const lastCheckIn = new Date(user.last_check_in).getTime();
     const deadline = lastCheckIn + (user.check_in_interval_seconds * 1000);
     
-    // Check expiration (with 15s buffer)
+    // Check expiration (Buffer 15s)
     if (Date.now() > (deadline + 15000)) {
       
-      // GENERATE MAP LINK
-      let locationStr = "Location unknown";
+      let locationStr = "Location Unknown";
       if (user.last_latitude && user.last_longitude) {
         locationStr = `https://www.google.com/maps?q=${user.last_latitude},${user.last_longitude}`;
       }
 
-      const alertText = `🚨 *EMERGENCY ALERT*\n\n${user.full_name || 'A user'} failed to check in!\n\n*Msg:* "${user.sos_message}"\n\n*Location:* ${locationStr}`;
-      const encodedMsg = encodeURIComponent(alertText);
-
-      // LOOP THROUGH GUARDIANS
-      if (user.guardians && Array.isArray(user.guardians)) {
-        for (const guardian of user.guardians) {
-            if (guardian.phone && guardian.apikey) {
-                try {
-                    const indiaNumber = `91${guardian.phone}`;
-                    const url = `https://api.callmebot.com/whatsapp.php?phone=${indiaNumber}&text=${encodedMsg}&apikey=${guardian.apikey}`;
-                    await fetch(url);
-                    console.log(`Sent to ${guardian.name}`);
-                } catch(e) { console.error(e); }
-            }
-        }
+      // SEND EMAIL (This is the only 100% reliable free PWA automation)
+      if (user.email) {
+          try {
+            await resend.emails.send({
+                from: 'Sentinel <onboarding@resend.dev>',
+                to: user.email, // Sends to self so you can forward, or add guardian email in DB
+                subject: '🚨 EMERGENCY: DEAD MAN SWITCH TRIGGERED',
+                html: `
+                  <h1>EMERGENCY ALERT</h1>
+                  <p><strong>${user.full_name}</strong> failed to check in.</p>
+                  <p><strong>Location:</strong> <a href="${locationStr}">Click to View on Map</a></p>
+                  <p>Please contact them immediately.</p>
+                `
+            });
+            console.log(`Email sent for ${user.full_name}`);
+          } catch (e) { console.error(e); }
       }
 
       await supabase.from('profiles').update({ is_active: false }).eq('id', user.id);

@@ -1,7 +1,7 @@
 'use client'
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect } from 'react'
 import { createClient } from '@supabase/supabase-js'
-import { Heart, Settings, MapPin, Plus, Trash2, User, PhoneCall, Play, Square, X, Laptop, Smartphone, AlertTriangle, MessageCircle } from 'lucide-react'
+import { Heart, Settings, MapPin, Plus, Trash2, User, PhoneCall, Play, Square, X, Laptop, Smartphone, CheckCircle, MessageSquare, ShieldAlert } from 'lucide-react'
 
 // --- 1. INITIALIZE DB ---
 const supabase = createClient(
@@ -14,10 +14,9 @@ type Guardian = {
   id: string;
   name: string;
   phone: string;
-  apikey: string;
 }
 
-// --- 3. HELPER COMPONENTS (Moved Outside for Stability) ---
+// --- 3. HELPER COMPONENTS ---
 const WheelColumn = ({ items, selected, onSelect, label }: any) => {
   return (
     <div className="flex flex-col items-center relative z-10 h-full justify-center">
@@ -45,7 +44,7 @@ const ScreenWrapper = ({ children }: { children: React.ReactNode }) => (
   </div>
 )
 
-// --- 4. MAIN APP COMPONENT ---
+// --- 4. MAIN APP ---
 export default function Home() {
   const [session, setSession] = useState<any>(null)
   const [loading, setLoading] = useState(false)
@@ -54,11 +53,11 @@ export default function Home() {
   // DATA STATES
   const [profile, setProfile] = useState<any>(null)
   const [guardians, setGuardians] = useState<Guardian[]>([])
+  const [permissionGranted, setPermissionGranted] = useState(false)
   
-  // LOCAL UI STATES
+  // UI STATES
   const [localName, setLocalName] = useState('') 
   const [isMobile, setIsMobile] = useState(false)
-  
   const [timeLeft, setTimeLeft] = useState<string>('00:00')
   const [view, setView] = useState('dashboard') 
   
@@ -66,16 +65,22 @@ export default function Home() {
   const [selectedMin, setSelectedMin] = useState(5)
   const [selectedSec, setSelectedSec] = useState(0)
 
-  // NEW GUARDIAN INPUTS
+  // INPUTS
   const [newName, setNewName] = useState('')
   const [newPhone, setNewPhone] = useState('')
-  const [newKey, setNewKey] = useState('')
 
-  // --- DETECT DEVICE & AUTH ---
+  // --- INIT ---
   useEffect(() => {
     const userAgent = typeof window.navigator === "undefined" ? "" : navigator.userAgent;
     const mobile = Boolean(userAgent.match(/Android|BlackBerry|iPhone|iPad|iPod|Opera Mini|IEMobile|WPDesktop/i));
     setIsMobile(mobile);
+
+    // Check Location Permission
+    if (navigator.permissions) {
+      navigator.permissions.query({ name: 'geolocation' }).then(result => {
+        if (result.state === 'granted') setPermissionGranted(true);
+      });
+    }
 
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session)
@@ -88,7 +93,7 @@ export default function Home() {
     return () => subscription.unsubscribe()
   }, [])
 
-  // --- TIMER LOGIC ---
+  // --- TIMER ---
   useEffect(() => {
     if (!profile?.last_check_in || !profile?.check_in_interval_seconds || !profile?.is_active) return
     
@@ -97,7 +102,7 @@ export default function Home() {
       const deadline = last + (profile.check_in_interval_seconds * 1000)
       const diff = deadline - new Date().getTime()
 
-      if (diff < 0) setTimeLeft("ALARM SENT")
+      if (diff < 0) setTimeLeft("ALERT SENT")
       else {
         const m = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60))
         const s = Math.floor((diff % (1000 * 60)) / 1000)
@@ -154,52 +159,78 @@ export default function Home() {
       guardians: guardians
     }).eq('id', session.user.id)
     
-    if (error) alert("Error saving")
-    else {
+    if (error) {
+      alert("Error saving")
+    } else {
       setProfile({...profile, full_name: localName, check_in_interval_seconds: totalSeconds})
-      alert("Configuration Saved!")
+      alert("Saved!")
       setView('dashboard')
     }
   }
 
   function addGuardian() {
-    if (!newName || !newPhone || !newKey) {
-      alert("Please fill all details"); return;
+    if (!newName || !newPhone) {
+      alert("Please fill Name and Phone"); return;
     }
-    const updated = [...guardians, { id: Date.now().toString(), name: newName, phone: newPhone, apikey: newKey }]
+    // Clean Phone Number (Remove +91 or spaces)
+    const cleanPhone = newPhone.replace(/\D/g,'').slice(-10);
+    
+    if (cleanPhone.length !== 10) {
+      alert("Please enter a valid 10-digit number"); return;
+    }
+
+    const updated = [...guardians, { id: Date.now().toString(), name: newName, phone: cleanPhone }]
     setGuardians(updated)
     setNewName('')
     setNewPhone('')
-    setNewKey('')
   }
 
   function removeGuardian(id: string) {
     setGuardians(guardians.filter(g => g.id !== id))
   }
 
+  // --- SOS LOGIC (The Core Feature) ---
+  function triggerManualSOS() {
+    if (guardians.length === 0) {
+      alert("Please add a Guardian first!");
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition((position) => {
+      const { latitude, longitude } = position.coords;
+      const mapLink = `https://www.google.com/maps?q=${latitude},${longitude}`;
+      const msgBody = `SOS! I need help. My location: ${mapLink}`;
+      
+      // Send to FIRST Guardian
+      const phone = guardians[0].phone;
+      
+      if (isMobile) {
+        // OPEN NATIVE SMS APP (Uses SIM)
+        window.location.href = `sms:${phone}${navigator.userAgent.match(/iPhone|iPad/i) ? '&' : '?'}body=${encodeURIComponent(msgBody)}`;
+      } else {
+        // ON PC: Open WhatsApp Web
+        window.open(`https://wa.me/91${phone}?text=${encodeURIComponent(msgBody)}`, '_blank');
+      }
+    }, () => alert("Location permission denied. Cannot send location."))
+  }
+
+  // --- DEAD MAN SWITCH ---
   async function activateSwitch() {
-    if (!navigator.geolocation) { alert("Location required"); return; }
     navigator.geolocation.getCurrentPosition(async (position) => {
+      setPermissionGranted(true);
       const { latitude, longitude } = position.coords;
       const updates = { last_check_in: new Date().toISOString(), is_active: true, last_latitude: latitude, last_longitude: longitude }
       await supabase.from('profiles').update(updates).eq('id', session.user.id)
       setProfile({ ...profile, ...updates })
-    }, () => alert("Allow location access to start."))
+    }, (err) => {
+      alert("GPS Required for Safety. Please Allow.");
+      setPermissionGranted(false);
+    })
   }
 
   async function stopSwitch() {
     await supabase.from('profiles').update({ is_active: false }).eq('id', session.user.id)
     setProfile({ ...profile, is_active: false })
-  }
-
-  async function testBot(phone: string, apikey: string) {
-     const url = `https://api.callmebot.com/whatsapp.php?phone=91${phone}&text=${encodeURIComponent("Test Message from Sakhi")}&apikey=${apikey}`;
-     try {
-        await fetch(url);
-        alert("Test Message Sent! Check WhatsApp.");
-     } catch(e) {
-        alert("Failed. Check API Key.");
-     }
   }
 
   // --- RENDER ---
@@ -209,17 +240,12 @@ export default function Home() {
         <div className="flex flex-col items-center justify-center h-full p-8 bg-gradient-to-b from-rose-50 to-white">
           <Heart className="w-16 h-16 text-rose-500 fill-rose-500 mb-6 animate-pulse" />
           <h1 className="text-4xl font-black text-gray-800 mb-2 tracking-tight">Sakhi</h1>
-          <p className="text-gray-500 text-center mb-10 font-medium">Your Silent Guardian.</p>
-          
-          <button onClick={handleGoogleLogin} className="w-full bg-white border-2 border-gray-200 text-gray-700 font-bold p-5 rounded-2xl mb-4 flex items-center justify-center gap-3 hover:bg-gray-50 transition-all text-lg shadow-sm">
+          <button onClick={handleGoogleLogin} className="w-full bg-white border-2 border-gray-200 text-gray-700 font-bold p-5 rounded-2xl mb-4 flex items-center justify-center gap-3 shadow-sm mt-8">
             Continue with Google
           </button>
-          
-          <div className="w-full flex items-center gap-3 mb-4"><div className="h-px bg-gray-300 flex-1"></div><span className="text-xs text-gray-400 font-bold">OR</span><div className="h-px bg-gray-300 flex-1"></div></div>
-          
-          <input type="email" placeholder="Email Address" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full bg-white border-2 border-gray-200 p-5 rounded-2xl mb-4 text-lg font-medium outline-none focus:border-rose-400" />
-          <button onClick={handleLogin} disabled={loading} className="w-full bg-rose-600 text-white font-bold p-5 rounded-2xl shadow-xl shadow-rose-200 text-lg">
-            {loading ? 'Sending...' : 'Send Magic Link'}
+          <input type="email" placeholder="Or Enter Email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full bg-gray-50 p-4 rounded-xl mb-4 text-center" />
+          <button onClick={handleLogin} disabled={loading} className="w-full bg-rose-600 text-white font-bold p-4 rounded-xl shadow-lg">
+            {loading ? 'Sending...' : 'Login with Email'}
           </button>
         </div>
       </ScreenWrapper>
@@ -234,22 +260,24 @@ export default function Home() {
            <Heart className="w-6 h-6 text-rose-500 fill-rose-500" />
            <span className="font-black text-2xl text-gray-800 tracking-tight">Sakhi</span>
         </div>
-        <div className="flex gap-2">
-            {/* Device Indicator */}
-            <div className="p-2 bg-gray-100 rounded-full text-gray-400">
-                {isMobile ? <Smartphone size={20} /> : <Laptop size={20} />}
-            </div>
-            <button onClick={() => setView(view === 'settings' ? 'dashboard' : 'settings')} className="p-2 bg-white rounded-full shadow-sm border border-gray-100">
-            {view === 'settings' ? <X size={24} className="text-gray-600"/> : <Settings size={24} className="text-gray-600" />}
-            </button>
-        </div>
+        <button onClick={() => setView(view === 'settings' ? 'dashboard' : 'settings')} className="p-2 bg-white rounded-full shadow-sm border border-gray-100">
+          {view === 'settings' ? <X size={24} className="text-gray-600"/> : <Settings size={24} className="text-gray-600" />}
+        </button>
       </div>
 
       <div className="p-6 flex-grow flex flex-col">
         {view === 'dashboard' ? (
           <>
+             {/* PERMISSION CHECK */}
+             {!permissionGranted && (
+               <div className="bg-amber-50 p-3 rounded-xl flex items-center gap-2 mb-4 cursor-pointer" onClick={activateSwitch}>
+                 <ShieldAlert className="text-amber-500" size={20}/>
+                 <span className="text-xs font-bold text-amber-700">GPS Permission Needed. Tap to Allow.</span>
+               </div>
+             )}
+
              {/* TIMER */}
-             <div className="text-center mt-6 mb-8">
+             <div className="text-center mt-4 mb-8">
                <h1 className="text-[4rem] font-black text-gray-800 tracking-tighter leading-none">{timeLeft}</h1>
                <div className={`inline-flex items-center gap-2 px-4 py-1 rounded-full text-[10px] font-bold uppercase tracking-[0.2em] mt-2 ${profile?.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-500'}`}>
                  <div className={`w-2 h-2 rounded-full ${profile?.is_active ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`}></div>
@@ -257,52 +285,50 @@ export default function Home() {
                </div>
              </div>
 
-             {/* MAIN BUTTON */}
-             <div className="flex-grow flex items-center justify-center relative">
+             {/* BIG RED SOS BUTTON (MANUAL) */}
+             <div className="flex-grow flex flex-col items-center justify-center gap-6">
+               
+               {/* 1. MANUAL SOS (SIM CARD) */}
+               <button onClick={triggerManualSOS} className="w-full bg-red-600 text-white p-6 rounded-3xl shadow-[0_10px_30px_rgba(220,38,38,0.4)] flex items-center justify-between group active:scale-95 transition-transform">
+                 <div className="flex items-center gap-4">
+                   <div className="bg-red-500 p-3 rounded-2xl"><MessageSquare size={32} fill="currentColor" /></div>
+                   <div className="text-left">
+                     <div className="text-2xl font-black">SOS MESSAGE</div>
+                     <div className="text-xs opacity-80 font-bold uppercase tracking-wide">Use SIM Card • Instant</div>
+                   </div>
+                 </div>
+                 <div className="bg-white/20 p-2 rounded-full"><Play size={20} fill="currentColor"/></div>
+               </button>
+
+               {/* 2. DEAD MAN SWITCH */}
                {profile?.is_active ? (
-                 <button onClick={activateSwitch} className="relative w-64 h-64 rounded-full bg-gradient-to-b from-rose-500 to-rose-700 shadow-[0_10px_40px_rgba(244,63,94,0.6)] flex flex-col items-center justify-center text-white active:scale-95 transition-all">
-                   <div className="absolute inset-0 rounded-full border-[6px] border-white/20 animate-pulse"></div>
-                   <MapPin size={48} className="mb-2" />
-                   <span className="text-2xl font-black">I AM SAFE</span>
-                   <span className="text-xs font-bold opacity-80 mt-1 uppercase tracking-wide">Tap to Reset</span>
+                 <button onClick={activateSwitch} className="w-full bg-gradient-to-r from-green-500 to-emerald-600 text-white p-6 rounded-3xl shadow-xl flex items-center justify-center gap-3 active:scale-95 transition-transform">
+                   <MapPin size={24} className="animate-bounce" />
+                   <span className="text-xl font-black">I AM SAFE (RESET)</span>
                  </button>
                ) : (
-                 <button onClick={activateSwitch} className="w-64 h-64 rounded-full bg-white border-[8px] border-gray-100 shadow-xl flex flex-col items-center justify-center text-gray-400 active:scale-95 transition-all hover:border-rose-200 group">
-                   <Play size={56} className="mb-2 text-gray-300 ml-2 group-hover:text-rose-400 transition-colors" />
-                   <span className="text-xl font-bold text-gray-400 group-hover:text-rose-500 transition-colors">ACTIVATE</span>
+                 <button onClick={activateSwitch} className="w-full bg-white border-[4px] border-gray-100 text-gray-400 p-6 rounded-3xl flex items-center justify-center gap-3 hover:border-green-200 hover:text-green-500 transition-colors">
+                   <ShieldAlert size={24} />
+                   <span className="text-xl font-bold">Start Timer</span>
                  </button>
                )}
              </div>
 
-             {/* ACTION BUTTONS (Device Aware) */}
-             <div className="mt-8 mb-4">
+             {/* ACTION GRID */}
+             <div className="mt-8 grid grid-cols-2 gap-4">
                {guardians.length > 0 ? (
-                 <div className="grid grid-cols-2 gap-4">
-                    {/* BUTTON 1: CALL */}
-                    {isMobile ? (
-                        <a href={`tel:${guardians[0].phone}`} className="bg-green-500 text-white p-4 rounded-2xl flex items-center justify-center gap-2 font-bold shadow-lg shadow-green-200 hover:bg-green-600 transition-colors">
-                            <PhoneCall size={20} /> Call
-                        </a>
-                    ) : (
-                        <div className="bg-gray-100 text-gray-400 p-4 rounded-2xl flex items-center justify-center gap-2 font-bold cursor-not-allowed" title="Calling available on Mobile only">
-                            <Laptop size={20} /> Call (PC)
-                        </div>
-                    )}
-
-                    {/* BUTTON 2: WHATSAPP */}
-                    <a href={`https://wa.me/91${guardians[0].phone}?text=Please%20Call%20Me`} target="_blank" className="bg-green-100 text-green-700 p-4 rounded-2xl flex items-center justify-center gap-2 font-bold border border-green-200">
-                        <MessageCircle size={20} /> Msg
-                    </a>
-                 </div>
+                  <a href={`tel:${guardians[0].phone}`} className="bg-gray-100 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 font-bold text-gray-600 hover:bg-green-100 hover:text-green-700 transition-colors">
+                    <PhoneCall size={24} /> <span className="text-sm">Call Guardian</span>
+                  </a>
                ) : (
-                  <div className="bg-amber-50 text-amber-600 p-4 rounded-2xl text-center text-sm font-bold border border-amber-100">
-                     ⚠ Add Guardians in Settings to enable Call/Msg features.
-                  </div>
+                  <a href="tel:112" className="bg-gray-100 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 font-bold text-gray-600">
+                    <PhoneCall size={24} /> <span className="text-sm">Call 112</span>
+                  </a>
                )}
-
+               
                {profile?.is_active && (
-                 <button onClick={stopSwitch} className="w-full mt-4 bg-gray-200 text-gray-600 p-4 rounded-2xl flex items-center justify-center gap-2 font-bold">
-                   <Square size={16} fill="currentColor"/> Stop Protection
+                 <button onClick={stopSwitch} className="bg-gray-800 text-white p-4 rounded-2xl flex flex-col items-center justify-center gap-2 font-bold">
+                   <Square size={20} fill="currentColor"/> <span className="text-sm">Stop Timer</span>
                  </button>
                )}
              </div>
@@ -310,80 +336,58 @@ export default function Home() {
         ) : (
           /* SETTINGS VIEW */
           <div className="space-y-8 animate-in slide-in-from-bottom-8 duration-500 pb-10">
-            <h2 className="text-3xl font-black text-gray-800">Configuration</h2>
+            <h2 className="text-3xl font-black text-gray-800">Setup</h2>
 
-            {/* NAME INPUT (Fixes Typing Issue) */}
+            {/* NAME */}
             <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
               <label className="flex items-center gap-2 text-xs font-bold text-gray-400 uppercase tracking-widest mb-3">
                 <User size={14}/> Your Name
               </label>
-              <input 
-                type="text" 
-                value={localName} 
-                onChange={(e) => setLocalName(e.target.value)} // UPDATES LOCAL STATE ONLY
-                className="w-full text-2xl font-bold text-gray-800 outline-none placeholder-gray-300 border-b-2 border-transparent focus:border-rose-400 transition-colors py-2" 
-                placeholder="Enter Name"
-              />
+              <input type="text" value={localName} onChange={(e) => setLocalName(e.target.value)} className="w-full text-2xl font-bold text-gray-800 outline-none border-b-2 border-transparent focus:border-rose-400 transition-colors py-2" placeholder="Enter Name"/>
             </div>
 
-            {/* TIMER WHEEL */}
-            <div className="bg-white p-8 rounded-3xl shadow-sm border border-gray-100 relative overflow-hidden">
-              <label className="text-xs font-bold text-gray-400 uppercase mb-6 block text-center tracking-widest">Check-in Timer</label>
-              <div className="relative h-48 flex justify-center items-center gap-4">
-                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full h-16 bg-rose-50 rounded-xl border border-rose-100 pointer-events-none z-0"></div>
-                <WheelColumn items={Array.from({length: 61}, (_, i) => i)} selected={selectedMin} onSelect={setSelectedMin} label="Min" />
-                <span className="text-gray-300 font-black text-4xl pb-6 z-10">:</span>
-                <WheelColumn items={Array.from({length: 60}, (_, i) => i)} selected={selectedSec} onSelect={setSelectedSec} label="Sec" />
-              </div>
-            </div>
-
-            {/* GUARDIANS MANAGER */}
+            {/* GUARDIANS */}
             <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
               <div className="flex items-center justify-between mb-6">
-                <h3 className="font-bold text-lg text-gray-800">Guardians</h3>
-                <span className="text-[10px] bg-rose-100 text-rose-600 px-2 py-1 rounded-full font-bold">{guardians.length} Active</span>
+                <h3 className="font-bold text-lg text-gray-800">Guardian Contact</h3>
               </div>
 
               {/* LIST */}
               <div className="space-y-3 mb-6">
                 {guardians.map((g, idx) => (
-                  <div key={idx} className="bg-gray-50 p-4 rounded-2xl">
-                    <div className="flex justify-between items-start">
-                        <div>
-                            <div className="font-bold text-gray-800">{g.name}</div>
-                            <div className="text-xs text-gray-500 font-mono mt-1">+91 {g.phone}</div>
-                        </div>
-                        <div className="flex gap-2">
-                             <button onClick={() => testBot(g.phone, g.apikey)} className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded font-bold">Test Bot</button>
-                             <button onClick={() => removeGuardian(g.id)} className="text-rose-300 hover:text-rose-500"><Trash2 size={18}/></button>
-                        </div>
+                  <div key={idx} className="bg-gray-50 p-4 rounded-2xl flex justify-between items-center">
+                    <div>
+                        <div className="font-bold text-gray-800">{g.name}</div>
+                        <div className="text-xs text-gray-500 font-mono mt-1">+91 {g.phone}</div>
                     </div>
+                    <button onClick={() => removeGuardian(g.id)} className="text-rose-300 hover:text-rose-500"><Trash2 size={18}/></button>
                   </div>
                 ))}
               </div>
 
               {/* ADD NEW */}
               <div className="bg-gray-50 p-4 rounded-2xl space-y-3">
-                <label className="text-xs font-bold text-gray-400 uppercase">Add New Contact</label>
                 <input type="text" placeholder="Name (e.g. Papa)" value={newName} onChange={e => setNewName(e.target.value)} className="w-full bg-white p-3 rounded-xl text-sm font-bold outline-none"/>
                 
                 <div className="flex items-center gap-2 bg-white p-3 rounded-xl">
                   <span className="text-gray-400 text-sm font-bold">+91</span>
                   <input type="tel" placeholder="9876543210" value={newPhone} onChange={e => setNewPhone(e.target.value.replace(/\D/g,''))} className="w-full text-sm font-bold outline-none"/>
                 </div>
-                {/* Balance Warning */}
-                <div className="flex gap-2 items-start bg-amber-50 p-2 rounded-lg">
-                    <AlertTriangle size={14} className="text-amber-500 mt-1 flex-shrink-0" />
-                    <p className="text-[10px] text-amber-700 leading-tight">
-                        <strong>Important:</strong> Ensure this phone has an active plan and balance. Web apps cannot check SIM balance automatically.
-                    </p>
-                </div>
-
-                <input type="text" placeholder="Bot API Key (From CallMeBot)" value={newKey} onChange={e => setNewKey(e.target.value)} className="w-full bg-white p-3 rounded-xl text-sm font-bold outline-none"/>
                 
                 <button onClick={addGuardian} className="w-full bg-gray-900 text-white text-sm font-bold py-3 rounded-xl flex items-center justify-center gap-2 shadow-lg">
-                  <Plus size={16}/> Save Contact
+                  <Plus size={16}/> Add Contact
                 </button>
+              </div>
+            </div>
+
+            {/* TIMER WHEEL */}
+            <div className="bg-white p-8 rounded-3xl shadow-sm border border-gray-100 relative overflow-hidden">
+              <label className="text-xs font-bold text-gray-400 uppercase mb-6 block text-center tracking-widest">Dead Man Timer</label>
+              <div className="relative h-48 flex justify-center items-center gap-4">
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full h-16 bg-rose-50 rounded-xl border border-rose-100 pointer-events-none z-0"></div>
+                <WheelColumn items={Array.from({length: 61}, (_, i) => i)} selected={selectedMin} onSelect={setSelectedMin} label="Min" />
+                <span className="text-gray-300 font-black text-4xl pb-6 z-10">:</span>
+                <WheelColumn items={Array.from({length: 60}, (_, i) => i)} selected={selectedSec} onSelect={setSelectedSec} label="Sec" />
               </div>
             </div>
 
